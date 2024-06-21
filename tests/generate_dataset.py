@@ -4,12 +4,12 @@ import matplotlib.pyplot as plt
 from sklearn.datasets import make_blobs
 
 # Parameters
-n_samples = 10000 # Total number of points
+n_samples = 100000 # Total number of points
 n_features = 2    # Number of features (x, y)
 n_classes = 5     # Number of classes
 x_range = (0, 720)  # Range for x coordinates
 y_range = (0 ,720)  # Range for y coordinates
-spread = 30  # Spread of the data points
+spread = 50 # Spread of the data points
 
 # Generate synthetic data
 centers = [(np.random.uniform(x_range[0], x_range[1]), np.random.uniform(y_range[0], y_range[1])) for _ in range(n_classes)]
@@ -18,9 +18,8 @@ X, y = make_blobs(n_samples=n_samples, centers=centers, cluster_std=spread, n_fe
 # Create a DataFrame
 df = pd.DataFrame(data=X, columns=['x', 'y']).astype(int).abs()
 df['class'] = y
-
 # Save to CSV
-df.to_csv('dataset/diecimila.csv', index=False)
+df.to_csv('dataset/centomila.csv', index=False, header=False)
 
 # Visualize the data
 plt.figure(figsize=(10, 6))

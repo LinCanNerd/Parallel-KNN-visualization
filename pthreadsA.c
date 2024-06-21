@@ -3,14 +3,16 @@
 #include <math.h>
 #include <png.h>
 #include <pthread.h>
+#include <omp.h>
 
 // Define the maximum number of points and labels
 #define MAX_POINTS 1000000 
 #define MAX_LABELS 5
 #define WIDTH 720
 #define HEIGHT 720
-#define SIDE 7
+#define SIDE 3
 #define NUM_THREADS 8
+#define K 5
 
 // Define the structure of a point
 typedef struct {
@@ -71,6 +73,17 @@ int read_csv(const char *filename, Point **points) {
     return i; // Return the number of points read
 }
 
+void parallel_sort(DistanceLabel *distances, int num_points) {
+    // Parallel sort using OpenMP
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            qsort(distances, num_points, sizeof(DistanceLabel), compare);
+        }
+    }
+}
+
 int classify(Point *points, int num_points, Point new_point, int k) {
     DistanceLabel *distances = (DistanceLabel *)malloc(num_points * sizeof(DistanceLabel));
     if (distances == NULL) {
@@ -78,12 +91,14 @@ int classify(Point *points, int num_points, Point new_point, int k) {
         return -1;
     }
 
+    // Parallel distance calculation
+    #pragma omp parallel for
     for (int i = 0; i < num_points; i++) {
         distances[i].distance = euclidean_distance(points[i], new_point);
         distances[i].label = points[i].label;
     }
 
-    qsort(distances, num_points, sizeof(DistanceLabel), compare);
+    parallel_sort(distances, num_points);
 
     int counts[MAX_LABELS] = {0};
     for (int i = 0; i < k; i++) {
@@ -106,11 +121,12 @@ int classify(Point *points, int num_points, Point new_point, int k) {
 void* classify_subrows(void* arg) {
     ThreadData *data = (ThreadData*)arg;
 
+    #pragma omp parallel for
     for (int i = data->start_row; i < data->end_row; i += SIDE) {
         for (int j = 0; j < WIDTH; j += SIDE) {
             Point center = {i + 1, j + 1}; // Center of 3x3 square
             if (center.x >= HEIGHT || center.y >= WIDTH) continue; // Skip if center is out of bounds
-            int class = classify(data->points, data->num_points, center, 5);
+            int class = classify(data->points, data->num_points, center, K);
             for (int x = i; x < i + SIDE && x < HEIGHT; x++) {
                 for (int y = j; y < j + SIDE && y < WIDTH; y++) {
                     data->boundaries[x][y] = class;

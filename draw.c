@@ -81,7 +81,7 @@ int read_csv(const char *filename, Point **points) {
 
 int main() {
     Point *points;
-    int num_points = read_csv("/home/pavka/KNN/simple.csv", &points);
+    int num_points = read_csv("dataset/diecimila.csv", &points);
     if (num_points < 0) {
         return 1; // Error reading CSV file
     }
@@ -119,7 +119,7 @@ int main() {
     }
 
     // Write image to file
-    FILE *fp = fopen("output.png", "wb");
+    FILE *fp = fopen("output/output.png", "wb");
     if (!fp) {
         perror("Unable to open output file");
         return 1;
