@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from sklearn.datasets import make_blobs
 
 # Parameters
-n_samples = 100 # Total number of points
+n_samples = 10000 # Total number of points
 n_features = 2    # Number of features (x, y)
 n_classes = 5     # Number of classes
 x_range = (0, 720)  # Range for x coordinates
@@ -20,7 +20,7 @@ df = pd.DataFrame(data=X, columns=['x', 'y']).astype(int).abs()
 df['class'] = y
 
 # Save to CSV
-df.to_csv('simple.csv', index=False)
+df.to_csv('dataset/diecimila.csv', index=False)
 
 # Visualize the data
 plt.figure(figsize=(10, 6))

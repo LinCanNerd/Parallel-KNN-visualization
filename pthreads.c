@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <png.h>
+#include <pthread.h>
 
 // Define the maximum number of points and labels
 #define MAX_POINTS 1000000 
@@ -9,6 +10,7 @@
 #define WIDTH 720
 #define HEIGHT 720
 #define SIDE 3
+#define NUM_THREADS 8
 
 // Define the structure of a point
 typedef struct {
@@ -21,6 +23,15 @@ typedef struct {
     int label;
 } DistanceLabel;
 
+typedef struct {
+    int thread_id;
+    int start_row;
+    int end_row;
+    Point *points;
+    int num_points;
+    int **boundaries;
+} ThreadData;
+
 int compare(const void *a, const void *b) {
     DistanceLabel *da = (DistanceLabel *)a;
     DistanceLabel *db = (DistanceLabel *)b;
@@ -32,7 +43,6 @@ int compare(const void *a, const void *b) {
 double euclidean_distance(Point a, Point b) {
     return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2));
 }
-
 
 int read_csv(const char *filename, Point **points) {
     FILE *file = fopen(filename, "r");
@@ -93,6 +103,24 @@ int classify(Point *points, int num_points, Point new_point, int k) {
     return max_label;
 }
 
+void* classify_subrows(void* arg) {
+    ThreadData *data = (ThreadData*)arg;
+
+    for (int i = data->start_row; i < data->end_row; i += SIDE) {
+        for (int j = 0; j < WIDTH; j += SIDE) {
+            Point center = {i + 1, j + 1}; // Center of 3x3 square
+            if (center.x >= HEIGHT || center.y >= WIDTH) continue; // Skip if center is out of bounds
+            int class = classify(data->points, data->num_points, center, 5);
+            for (int x = i; x < i + SIDE && x < HEIGHT; x++) {
+                for (int y = j; y < j + SIDE && y < WIDTH; y++) {
+                    data->boundaries[x][y] = class;
+                }
+            }
+        }
+    }
+
+    pthread_exit(NULL);
+}
 
 int** get_boundaries(Point *points, int num_points, int h, int w) {
     int **boundaries = (int **)malloc(h * sizeof(int *));
@@ -114,22 +142,27 @@ int** get_boundaries(Point *points, int num_points, int h, int w) {
         }
     }
 
-    for (int i = 0; i < h; i += SIDE) {
-        for (int j = 0; j < w; j += SIDE) {
-            Point center = {i + 1, j + 1}; // Center of 3x3 square
-            if (center.x >= h || center.y >= w) continue; // Skip if center is out of bounds
-            int class = classify(points, num_points, center, 5);
-            for (int x = i; x < i + SIDE && x < h; x++) {
-                for (int y = j; y < j + SIDE && y < w; y++) {
-                    boundaries[x][y] = class;
-                }
-            }
-        }
+    pthread_t threads[NUM_THREADS];
+    ThreadData thread_data[NUM_THREADS];
+    int rows_per_thread = HEIGHT / NUM_THREADS;
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        thread_data[i].thread_id = i;
+        thread_data[i].start_row = i * rows_per_thread;
+        thread_data[i].end_row = (i + 1) * rows_per_thread;
+        thread_data[i].points = points;
+        thread_data[i].num_points = num_points;
+        thread_data[i].boundaries = boundaries;
+
+        pthread_create(&threads[i], NULL, classify_subrows, (void*)&thread_data[i]);
+    }
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
     }
 
     return boundaries;
 }
-
 
 void draw_boundaries(int **boundaries, png_bytep *row_pointers) {
     png_byte colors[6][3] = {
@@ -250,7 +283,7 @@ int main() {
     allocate_memory_for_rows(&row_pointers);
 
     draw_boundaries(boundaries, row_pointers);
-    write_png_file("output/boundaries.png", row_pointers);
+    write_png_file("output/boundariesP.png", row_pointers);
 
     free_memory(boundaries, row_pointers, points);
 
