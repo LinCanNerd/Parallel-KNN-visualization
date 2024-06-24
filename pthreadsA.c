@@ -3,9 +3,7 @@
 #include <math.h>
 #include <png.h>
 #include <pthread.h>
-#include <omp.h>
 
-// Define the maximum number of points and labels
 #define MAX_POINTS 1000000 
 #define MAX_LABELS 5
 #define WIDTH 720
@@ -13,7 +11,6 @@
 #define SIDE 3
 #define NUM_THREADS 8
 
-// Define the structure of a point
 typedef struct {
     double x, y;
     int label;
@@ -25,12 +22,16 @@ typedef struct {
 } DistanceLabel;
 
 typedef struct {
-    int thread_id;
-    int start_row;
-    int end_row;
     Point *points;
     int num_points;
     int **boundaries;
+    int start_row;
+    int end_row;
+    int k;
+    Point center;
+    DistanceLabel *distances;
+    int start_index;
+    int end_index;
 } ThreadData;
 
 int compare(const void *a, const void *b) {
@@ -72,38 +73,17 @@ int read_csv(const char *filename, Point **points) {
     return i; // Return the number of points read
 }
 
-int partition(DistanceLabel *arr, int left, int right) {
-    DistanceLabel pivot = arr[right];
-    int i = left - 1;
+void *calculate_distances(void *arg) {
+    ThreadData *data = (ThreadData *)arg;
+    Point center = data->center;
+    DistanceLabel *distances = data->distances;
 
-    for (int j = left; j < right; j++) {
-        if (compare(&arr[j], &pivot) <= 0) {
-            i++;
-            DistanceLabel temp = arr[i];
-            arr[i] = arr[j];
-            arr[j] = temp;
-        }
+    for (int i = data->start_index; i < data->end_index; i++) {
+        distances[i].distance = euclidean_distance(data->points[i], center);
+        distances[i].label = data->points[i].label;
     }
 
-    DistanceLabel temp = arr[i + 1];
-    arr[i + 1] = arr[right];
-    arr[right] = temp;
-
-    return i + 1;
-}
-
-void parallel_quicksort(DistanceLabel *arr, int left, int right) {
-    if (left < right) {
-        if (right - left < 1000) {  // Use a threshold to avoid excessive parallelism
-            qsort(arr + left, right - left + 1, sizeof(DistanceLabel), compare);
-        } else {
-            int pivot = partition(arr, left, right);
-            #pragma omp task
-            parallel_quicksort(arr, left, pivot - 1);
-            #pragma omp task
-            parallel_quicksort(arr, pivot + 1, right);
-        }
-    }
+    return NULL;
 }
 
 int classify(Point *points, int num_points, Point new_point, int k) {
@@ -113,19 +93,25 @@ int classify(Point *points, int num_points, Point new_point, int k) {
         return -1;
     }
 
-    // Parallelize distance calculation
-    #pragma omp parallel for
-    for (int i = 0; i < num_points; i++) {
-        distances[i].distance = euclidean_distance(points[i], new_point);
-        distances[i].label = points[i].label;
+    pthread_t threads[NUM_THREADS];
+    ThreadData thread_data[NUM_THREADS];
+    int points_per_thread = num_points / NUM_THREADS;
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        thread_data[i].points = points;
+        thread_data[i].center = new_point;
+        thread_data[i].distances = distances;
+        thread_data[i].start_index = i * points_per_thread;
+        thread_data[i].end_index = (i == NUM_THREADS - 1) ? num_points : (i + 1) * points_per_thread;
+
+        pthread_create(&threads[i], NULL, calculate_distances, &thread_data[i]);
     }
 
-    // Parallel sorting using OpenMP tasks
-    #pragma omp parallel
-    #pragma omp single
-    {
-        parallel_quicksort(distances, 0, num_points - 1);
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
     }
+
+    qsort(distances, num_points, sizeof(DistanceLabel), compare);
 
     int counts[MAX_LABELS] = {0};
     for (int i = 0; i < k; i++) {
@@ -145,33 +131,38 @@ int classify(Point *points, int num_points, Point new_point, int k) {
     return max_label;
 }
 
-void* classify_subrows(void* arg) {
-    ThreadData *data = (ThreadData*)arg;
+void *process_rows(void *arg) {
+    ThreadData *data = (ThreadData *)arg;
+    Point *points = data->points;
+    int num_points = data->num_points;
+    int **boundaries = data->boundaries;
+    int start_row = data->start_row;
+    int end_row = data->end_row;
+    int k = data->k;
 
-    for (int i = data->start_row; i < data->end_row; i += SIDE) {
+    for (int i = start_row; i < end_row; i += SIDE) {
         for (int j = 0; j < WIDTH; j += SIDE) {
-            Point center = {i + 1, j + 1}; // Center of 3x3 square
-            if (center.x >= HEIGHT || center.y >= WIDTH) continue; // Skip if center is out of bounds
-            int class = classify(data->points, data->num_points, center, 5);
+            Point center = {i + 1, j + 1};
+            if (center.x >= HEIGHT || center.y >= WIDTH) continue;
+            int class = classify(points, num_points, center, k);
             for (int x = i; x < i + SIDE && x < HEIGHT; x++) {
                 for (int y = j; y < j + SIDE && y < WIDTH; y++) {
-                    data->boundaries[x][y] = class;
+                    boundaries[x][y] = class;
                 }
             }
         }
     }
 
-    pthread_exit(NULL);
+    return NULL;
 }
 
-int** get_boundaries(Point *points, int num_points, int h, int w) {
+int **get_boundaries(Point *points, int num_points, int h, int w) {
     int **boundaries = (int **)malloc(h * sizeof(int *));
-    
     if (boundaries == NULL) {
         perror("Unable to allocate memory for boundaries");
         return NULL;
     }
-    
+
     for (int i = 0; i < h; i++) {
         boundaries[i] = (int *)malloc(w * sizeof(int));
         if (boundaries[i] == NULL) {
@@ -186,17 +177,17 @@ int** get_boundaries(Point *points, int num_points, int h, int w) {
 
     pthread_t threads[NUM_THREADS];
     ThreadData thread_data[NUM_THREADS];
-    int rows_per_thread = HEIGHT / NUM_THREADS;
+    int rows_per_thread = h / NUM_THREADS;
 
     for (int i = 0; i < NUM_THREADS; i++) {
-        thread_data[i].thread_id = i;
-        thread_data[i].start_row = i * rows_per_thread;
-        thread_data[i].end_row = (i + 1) * rows_per_thread;
         thread_data[i].points = points;
         thread_data[i].num_points = num_points;
         thread_data[i].boundaries = boundaries;
+        thread_data[i].start_row = i * rows_per_thread;
+        thread_data[i].end_row = (i == NUM_THREADS - 1) ? h : (i + 1) * rows_per_thread;
+        thread_data[i].k = 5;
 
-        pthread_create(&threads[i], NULL, classify_subrows, (void*)&thread_data[i]);
+        pthread_create(&threads[i], NULL, process_rows, &thread_data[i]);
     }
 
     for (int i = 0; i < NUM_THREADS; i++) {
@@ -310,7 +301,7 @@ void free_memory(int **boundaries, png_bytep *row_pointers, Point *points) {
 int main() {
     Point *points;
     int num_points;
-    const char* filename = "dataset/diecimila.csv";
+    const char* filename = "dataset/cinquantamila.csv";
 
     num_points = read_csv(filename, &points);
     if (num_points == -1) return 1;
@@ -325,7 +316,7 @@ int main() {
     allocate_memory_for_rows(&row_pointers);
 
     draw_boundaries(boundaries, row_pointers);
-    write_png_file("output/boundariesP.png", row_pointers);
+    write_png_file("output/boundariesPM.png", row_pointers);
 
     free_memory(boundaries, row_pointers, points);
 

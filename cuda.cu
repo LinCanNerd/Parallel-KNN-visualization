@@ -8,8 +8,8 @@
 #define MAX_LABELS 5
 #define WIDTH 720
 #define HEIGHT 720
-#define SIDE 3
-#define TILE_SIZE 80 // Each tile will be 32x32 pixels
+#define SIDE 4
+#define TILE_SIZE 32 // Each tile will be 32x32 pixels
 
 typedef struct {
     double x, y;
@@ -39,13 +39,16 @@ __device__ int classify_gpu(Point *points, int num_points, Point new_point, int 
     double distances[MAX_LABELS];
     int labels[MAX_LABELS];
 
+    // Initialize distances and labels with the first k points
     for (int i = 0; i < k; i++) {
         distances[i] = euclidean_distance(points[i], new_point);
         labels[i] = points[i].label;
     }
 
+    // Sort initial k points
     insertion_sort(distances, labels, k);
 
+    // Compare remaining points
     for (int i = k; i < num_points; i++) {
         double dist = euclidean_distance(points[i], new_point);
         if (dist < distances[k - 1]) {
@@ -55,11 +58,13 @@ __device__ int classify_gpu(Point *points, int num_points, Point new_point, int 
         }
     }
 
+    // Count labels
     int counts[MAX_LABELS] = {0};
     for (int i = 0; i < k; i++) {
         counts[labels[i]]++;
     }
 
+    // Find the most frequent label
     int max_count = 0;
     int max_label = -1;
     for (int i = 0; i < MAX_LABELS; i++) {
@@ -78,17 +83,16 @@ __global__ void get_boundaries_gpu(Point *points, int num_points, int *boundarie
     int bx = blockIdx.x;
     int by = blockIdx.y;
 
-    int start_x = bx * TILE_SIZE;
-    int start_y = by * TILE_SIZE;
+    int x = bx * TILE_SIZE + tx * SIDE;
+    int y = by * TILE_SIZE + ty * SIDE;
 
-    for (int x = start_x + tx; x < start_x + TILE_SIZE && x < width; x += SIDE) {
-        for (int y = start_y + ty; y < start_y + TILE_SIZE && y < height; y += SIDE) {
-            Point center = {(double)x + 1.5, (double)y + 1.5}; // Center of 3x3 square
-            int label = classify_gpu(points, num_points, center, 5);
-            for (int dx = 0; dx < SIDE && x + dx < width; dx++) {
-                for (int dy = 0; dy < SIDE && y + dy < height; dy++) {
-                    boundaries[(y + dy) * width + (x + dx)] = label;
-                }
+    if (x < width && y < height) {
+        Point center = {(double)x + 1.5, (double)y + 1.5}; // Center of 3x3 square
+        int label = classify_gpu(points, num_points, center, 5);
+
+        for (int dx = 0; dx < SIDE && x + dx < width; dx++) {
+            for (int dy = 0; dy < SIDE && y + dy < height; dy++) {
+                boundaries[(y + dy) * width + (x + dx)] = label;
             }
         }
     }
@@ -212,7 +216,7 @@ void allocate_memory_for_rows(png_bytep **row_pointers) {
 int main() {
     Point *h_points;
     int num_points;
-    const char* filename = "dataset/diecimila.csv";
+    const char* filename = "dataset/cinquantamila.csv";
 
     num_points = read_csv(filename, &h_points);
     if (num_points == -1) return 1;
@@ -226,9 +230,19 @@ int main() {
     cudaMalloc(&d_boundaries, WIDTH * HEIGHT * sizeof(int));
 
     // Launch kernel
-    dim3 block_size(TILE_SIZE, TILE_SIZE);
-    dim3 num_blocks((WIDTH + TILE_SIZE - 1) / TILE_SIZE, (HEIGHT + TILE_SIZE - 1) / TILE_SIZE);
+    dim3 block_size(TILE_SIZE / SIDE, TILE_SIZE / SIDE);
+    dim3 num_blocks((WIDTH + TILE_SIZE) / TILE_SIZE, (HEIGHT + TILE_SIZE) / TILE_SIZE);
     get_boundaries_gpu<<<num_blocks, block_size>>>(d_points, num_points, d_boundaries, WIDTH, HEIGHT);
+
+    // Check for any errors in kernel launch
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA error: %s\n", cudaGetErrorString(err));
+        return -1;
+    }
+
+    // Ensure the kernel has completed
+    cudaDeviceSynchronize();
 
     // Copy result back to host
     int *h_boundaries = (int *)malloc(WIDTH * HEIGHT * sizeof(int));
@@ -244,7 +258,7 @@ int main() {
     allocate_memory_for_rows(&row_pointers);
 
     draw_boundaries(boundaries_2d, row_pointers);
-    write_png_file("output/boundaries_cuda.png", row_pointers);
+    write_png_file("output/boundariesC.png", row_pointers);
 
     // Free memory
     cudaFree(d_points);
@@ -259,4 +273,4 @@ int main() {
 
     printf("PNG file created successfully using CUDA!\n");
     return 0;
-}   
+}
