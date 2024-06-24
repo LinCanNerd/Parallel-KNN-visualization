@@ -9,7 +9,7 @@
 #define MAX_LABELS 5
 #define WIDTH 720
 #define HEIGHT 720
-#define SIDE 7
+#define SIDE 3
 #define NUM_THREADS 8
 
 // Define the structure of a point
