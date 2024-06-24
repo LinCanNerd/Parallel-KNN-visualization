@@ -9,7 +9,7 @@
 #define WIDTH 720
 #define HEIGHT 720
 #define SIDE 3
-#define TILE_SIZE 32 // Each tile will be 32x32 pixels
+#define TILE_SIZE 80 // Each tile will be 32x32 pixels
 
 typedef struct {
     double x, y;
@@ -78,18 +78,16 @@ __global__ void get_boundaries_gpu(Point *points, int num_points, int *boundarie
     int bx = blockIdx.x;
     int by = blockIdx.y;
 
-    int x = bx * TILE_SIZE + tx;
-    int y = by * TILE_SIZE + ty;
+    int start_x = bx * TILE_SIZE;
+    int start_y = by * TILE_SIZE;
 
-    if (x < width && y < height) {
-        for (int i = x; i < x + SIDE && i < width; i += SIDE) {
-            for (int j = y; j < y + SIDE && j < height; j += SIDE) {
-                Point center = {(double)i + 1.5, (double)j + 1.5}; // Center of 3x3 square
-                int label = classify_gpu(points, num_points, center, 5);
-                for (int dx = 0; dx < SIDE && i + dx < width; dx++) {
-                    for (int dy = 0; dy < SIDE && j + dy < height; dy++) {
-                        boundaries[(j + dy) * height + (i + dx)] = label;
-                    }
+    for (int x = start_x + tx; x < start_x + TILE_SIZE && x < width; x += SIDE) {
+        for (int y = start_y + ty; y < start_y + TILE_SIZE && y < height; y += SIDE) {
+            Point center = {(double)x + 1.5, (double)y + 1.5}; // Center of 3x3 square
+            int label = classify_gpu(points, num_points, center, 5);
+            for (int dx = 0; dx < SIDE && x + dx < width; dx++) {
+                for (int dy = 0; dy < SIDE && y + dy < height; dy++) {
+                    boundaries[(y + dy) * width + (x + dx)] = label;
                 }
             }
         }

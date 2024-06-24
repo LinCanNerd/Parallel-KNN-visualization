@@ -235,7 +235,7 @@ void free_memory(int **boundaries, png_bytep *row_pointers, Point *points) {
 int main() {
     Point *points;
     int num_points;
-    const char* filename = "dataset/simple.csv";
+    const char* filename = "dataset/diecimila.csv";
 
     num_points = read_csv(filename, &points);
     if (num_points == -1) return 1;
