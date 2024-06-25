@@ -13,12 +13,12 @@
 // Define the structure of a point
 typedef struct {
     double x, y;
-    int label;
+    int class;
 } Point;
 
 typedef struct {
     double distance;
-    int label;
+    int class;
 } DistanceLabel;
 
 int compare(const void *a, const void *b) {
@@ -49,7 +49,7 @@ int read_csv(const char *filename, Point **points) {
     }
 
     int i = 0;
-    while (fscanf(file, "%lf,%lf,%d", &temp_points[i].x, &temp_points[i].y, &temp_points[i].label) == 3) {
+    while (fscanf(file, "%lf,%lf,%d", &temp_points[i].x, &temp_points[i].y, &temp_points[i].class) == 3) {
         i++;
         if (i >= MAX_POINTS) {
             break;
@@ -70,14 +70,14 @@ int classify(Point *points, int num_points, Point new_point, int k) {
 
     for (int i = 0; i < num_points; i++) {
         distances[i].distance = euclidean_distance(points[i], new_point);
-        distances[i].label = points[i].label;
+        distances[i].class = points[i].class;
     }
 
     qsort(distances, num_points, sizeof(DistanceLabel), compare);
 
     int counts[MAX_LABELS] = {0};
     for (int i = 0; i < k; i++) {
-        counts[distances[i].label]++;
+        counts[distances[i].class]++;
     }
 
     int max_count = 0;
@@ -95,6 +95,8 @@ int classify(Point *points, int num_points, Point new_point, int k) {
 
 
 int** get_boundaries(Point *points, int num_points, int h, int w) {
+
+    //alloco la memoria per i confini
     int **boundaries = (int **)malloc(h * sizeof(int *));
     
     if (boundaries == NULL) {
@@ -114,11 +116,17 @@ int** get_boundaries(Point *points, int num_points, int h, int w) {
         }
     }
 
+
+    //Per ogni quadratino SIDE x SIDE calcolo la classe
     for (int i = 0; i < h; i += SIDE) {
         for (int j = 0; j < w; j += SIDE) {
-            Point center = {i + 1, j + 1}; // Center of 3x3 square
-            if (center.x >= h || center.y >= w) continue; // Skip if center is out of bounds
+            Point center = {i , j}; // Centro del quadratino
+            if (center.x >= h || center.y >= w) continue; // Se il centro è fuori dall'immagine
+
+            // Calcolo la classe del quadratino
             int class = classify(points, num_points, center, 5);
+
+            // Assegno la classe a tutti i pixel del quadratino
             for (int x = i; x < i + SIDE && x < h; x++) {
                 for (int y = j; y < j + SIDE && y < w; y++) {
                     boundaries[x][y] = class;
@@ -132,6 +140,8 @@ int** get_boundaries(Point *points, int num_points, int h, int w) {
 
 
 void draw_boundaries(int **boundaries, png_bytep *row_pointers) {
+
+    // Colori delle classi
     png_byte colors[6][3] = {
         {255, 0, 0},    // Red
         {0, 255, 0},    // Green
@@ -144,15 +154,15 @@ void draw_boundaries(int **boundaries, png_bytep *row_pointers) {
     for (int y = 0; y < HEIGHT; y++) {
         png_bytep row = row_pointers[y];
         for (int x = 0; x < WIDTH; x++) {
-            int label = boundaries[x][y];
-            if (label == -1) {
+            int class = boundaries[x][y];
+            if (class == -1) {
                 row[x * 4] = 255;
                 row[x * 4 + 1] = 255;
                 row[x * 4 + 2] = 255;
             } else {
-                row[x * 4] = colors[label][0];
-                row[x * 4 + 1] = colors[label][1];
-                row[x * 4 + 2] = colors[label][2];
+                row[x * 4] = colors[class][0];
+                row[x * 4 + 1] = colors[class][1];
+                row[x * 4 + 2] = colors[class][2];
             }
             row[x * 4 + 3] = 255;
         }
@@ -233,25 +243,29 @@ void free_memory(int **boundaries, png_bytep *row_pointers, Point *points) {
 }
 
 int main() {
+    //inizializzo le variabili
     Point *points;
     int num_points;
     const char* filename = "dataset/diecimila.csv";
 
+    //leggo il file csv
     num_points = read_csv(filename, &points);
     if (num_points == -1) return 1;
 
+    //creo i confini
     int **boundaries = get_boundaries(points, num_points, HEIGHT, WIDTH);
     if (boundaries == NULL) {
         free(points);
         return 1;
     }
 
+    //creo il file png
     png_bytep *row_pointers;
     allocate_memory_for_rows(&row_pointers);
-
     draw_boundaries(boundaries, row_pointers);
     write_png_file("output/boundaries.png", row_pointers);
 
+    //libero la memoria
     free_memory(boundaries, row_pointers, points);
 
     printf("PNG file created successfully!\n");
