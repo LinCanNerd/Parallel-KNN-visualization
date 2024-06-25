@@ -3,9 +3,9 @@
 #include <math.h>
 #include <png.h>
 
-// Define the maximum number of points and labels
+// Define the maximum number of points and CLASSES
 #define MAX_POINTS 1000000 
-#define MAX_LABELS 5
+#define MAX_CLASSES 5
 #define WIDTH 720
 #define HEIGHT 720
 #define SIDE 3
@@ -19,11 +19,11 @@ typedef struct {
 typedef struct {
     double distance;
     int class;
-} DistanceLabel;
+} DistanceClass;
 
 int compare(const void *a, const void *b) {
-    DistanceLabel *da = (DistanceLabel *)a;
-    DistanceLabel *db = (DistanceLabel *)b;
+    DistanceClass *da = (DistanceClass *)a;
+    DistanceClass *db = (DistanceClass *)b;
     if (da->distance < db->distance) return -1;
     if (da->distance > db->distance) return 1;
     return 0;
@@ -62,7 +62,7 @@ int read_csv(const char *filename, Point **points) {
 }
 
 int classify(Point *points, int num_points, Point new_point, int k) {
-    DistanceLabel *distances = (DistanceLabel *)malloc(num_points * sizeof(DistanceLabel));
+    DistanceClass *distances = (DistanceClass *)malloc(num_points * sizeof(DistanceClass));
     if (distances == NULL) {
         perror("Unable to allocate memory for distances");
         return -1;
@@ -73,16 +73,16 @@ int classify(Point *points, int num_points, Point new_point, int k) {
         distances[i].class = points[i].class;
     }
 
-    qsort(distances, num_points, sizeof(DistanceLabel), compare);
+    qsort(distances, num_points, sizeof(DistanceClass), compare);
 
-    int counts[MAX_LABELS] = {0};
+    int counts[MAX_CLASSES] = {0};
     for (int i = 0; i < k; i++) {
         counts[distances[i].class]++;
     }
 
     int max_count = 0;
     int max_label = -1;
-    for (int i = 0; i < MAX_LABELS; i++) {
+    for (int i = 0; i < MAX_CLASSES; i++) {
         if (counts[i] > max_count) {
             max_count = counts[i];
             max_label = i;
