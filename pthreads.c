@@ -4,44 +4,60 @@
 #include <png.h>
 #include <pthread.h>
 
-// Define the maximum number of points and labels
 #define MAX_POINTS 1000000 
-#define MAX_LABELS 5
+#define MAX_CLASSES 5
 #define WIDTH 720
 #define HEIGHT 720
 #define SIDE 3
 #define NUM_THREADS 8
+#define K 50
 
-// Define the structure of a point
+//gcc -o pthreads pthreads.c -lpng -lm -pthread -O3
+
 typedef struct {
     double x, y;
-    int label;
+    int class;
 } Point;
 
 typedef struct {
     double distance;
-    int label;
-} DistanceLabel;
+    int class;
+} DistanceClass;
 
+//struttura dati per distanze
 typedef struct {
-    int thread_id;
-    int start_row;
-    int end_row;
+    Point *points;
+    int num_points;
+    Point center;
+    DistanceClass *distances;
+    int start_index;
+    int end_index;
+} DistanceThreadData;
+
+//struttura dati per classificazione
+typedef struct {
     Point *points;
     int num_points;
     int **boundaries;
-} ThreadData;
-
-int compare(const void *a, const void *b) {
-    DistanceLabel *da = (DistanceLabel *)a;
-    DistanceLabel *db = (DistanceLabel *)b;
-    if (da->distance < db->distance) return -1;
-    if (da->distance > db->distance) return 1;
-    return 0;
-}
+    int start_row;
+    int end_row;
+    int k;
+} ClassificationThreadData;
 
 double euclidean_distance(Point a, Point b) {
     return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2));
+}
+
+void k_bubble_sort(DistanceClass *distances, int size, int k) {
+    for (int i = 0; i < k; i++) {
+        for (int j = i+1 ; j < size; j++) {
+            if (distances[i].distance > distances[j].distance) {
+                DistanceClass temp = distances[i];
+                distances[i] = distances[j];
+                distances[j] = temp;
+            }
+        }
+    }
 }
 
 int read_csv(const char *filename, Point **points) {
@@ -59,7 +75,7 @@ int read_csv(const char *filename, Point **points) {
     }
 
     int i = 0;
-    while (fscanf(file, "%lf,%lf,%d", &temp_points[i].x, &temp_points[i].y, &temp_points[i].label) == 3) {
+    while (fscanf(file, "%lf,%lf,%d", &temp_points[i].x, &temp_points[i].y, &temp_points[i].class) == 3) {
         i++;
         if (i >= MAX_POINTS) {
             break;
@@ -71,28 +87,56 @@ int read_csv(const char *filename, Point **points) {
     return i; // Return the number of points read
 }
 
+//funzione per calcolare le distanze in parallelo
+void *calculate_distances(void *arg) {
+    DistanceThreadData *data = (DistanceThreadData *)arg;
+    Point center = data->center;
+    DistanceClass *distances = data->distances;
+
+    for (int i = data->start_index; i < data->end_index; i++) {
+        distances[i].distance = euclidean_distance(data->points[i], center);
+        distances[i].class = data->points[i].class;
+    }
+
+    return NULL;
+}
+
+//funzione per classificare un punto in parallelo
 int classify(Point *points, int num_points, Point new_point, int k) {
-    DistanceLabel *distances = (DistanceLabel *)malloc(num_points * sizeof(DistanceLabel));
+    DistanceClass *distances = (DistanceClass *)malloc(num_points * sizeof(DistanceClass));
     if (distances == NULL) {
         perror("Unable to allocate memory for distances");
         return -1;
     }
 
-    for (int i = 0; i < num_points; i++) {
-        distances[i].distance = euclidean_distance(points[i], new_point);
-        distances[i].label = points[i].label;
+    pthread_t threads[NUM_THREADS];
+    DistanceThreadData thread_data[NUM_THREADS];
+    int points_per_thread = num_points / NUM_THREADS;
+
+    for (int i = 0; i < NUM_THREADS; i++) {
+        thread_data[i].points = points;
+        thread_data[i].center = new_point;
+        thread_data[i].distances = distances;
+        thread_data[i].start_index = i * points_per_thread;
+        thread_data[i].end_index = (i == NUM_THREADS - 1) ? num_points : (i + 1) * points_per_thread;
+
+        pthread_create(&threads[i], NULL, calculate_distances, &thread_data[i]);
     }
 
-    qsort(distances, num_points, sizeof(DistanceLabel), compare);
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+    }
 
-    int counts[MAX_LABELS] = {0};
+    k_bubble_sort(distances, num_points, k);
+
+    int counts[MAX_CLASSES] = {0};
     for (int i = 0; i < k; i++) {
-        counts[distances[i].label]++;
+        counts[distances[i].class]++;
     }
 
     int max_count = 0;
     int max_label = -1;
-    for (int i = 0; i < MAX_LABELS; i++) {
+    for (int i = 0; i < MAX_CLASSES; i++) {
         if (counts[i] > max_count) {
             max_count = counts[i];
             max_label = i;
@@ -103,33 +147,40 @@ int classify(Point *points, int num_points, Point new_point, int k) {
     return max_label;
 }
 
-void* classify_subrows(void* arg) {
-    ThreadData *data = (ThreadData*)arg;
+void *process_rows(void *arg) {
+    ClassificationThreadData *data = (ClassificationThreadData *)arg;
+    Point *points = data->points;
+    int num_points = data->num_points;
+    int **boundaries = data->boundaries;
+    int start_row = data->start_row;
+    int end_row = data->end_row;
+    int k = data->k;
 
-    for (int i = data->start_row; i < data->end_row; i += SIDE) {
+    for (int i = start_row; i < end_row; i += SIDE) {
         for (int j = 0; j < WIDTH; j += SIDE) {
-            Point center = {i + 1, j + 1}; // Center of 3x3 square
-            if (center.x >= HEIGHT || center.y >= WIDTH) continue; // Skip if center is out of bounds
-            int class = classify(data->points, data->num_points, center, 5);
+            Point center = {i , j }; //pixel di riferimento del quadratino
+            if (center.x >= HEIGHT || center.y >= WIDTH) continue;
+
+            int class = classify(points, num_points, center, k); //classifica il punto
+
             for (int x = i; x < i + SIDE && x < HEIGHT; x++) {
                 for (int y = j; y < j + SIDE && y < WIDTH; y++) {
-                    data->boundaries[x][y] = class;
+                    boundaries[x][y] = class;
                 }
             }
         }
     }
 
-    pthread_exit(NULL);
+    return NULL;
 }
 
-int** get_boundaries(Point *points, int num_points, int h, int w) {
+int **get_boundaries(Point *points, int num_points, int h, int w) {
     int **boundaries = (int **)malloc(h * sizeof(int *));
-    
     if (boundaries == NULL) {
         perror("Unable to allocate memory for boundaries");
         return NULL;
     }
-    
+
     for (int i = 0; i < h; i++) {
         boundaries[i] = (int *)malloc(w * sizeof(int));
         if (boundaries[i] == NULL) {
@@ -143,18 +194,19 @@ int** get_boundaries(Point *points, int num_points, int h, int w) {
     }
 
     pthread_t threads[NUM_THREADS];
-    ThreadData thread_data[NUM_THREADS];
-    int rows_per_thread = HEIGHT / NUM_THREADS;
+    ClassificationThreadData thread_data[NUM_THREADS];
+    int rows_per_thread = h / NUM_THREADS;
 
     for (int i = 0; i < NUM_THREADS; i++) {
-        thread_data[i].thread_id = i;
-        thread_data[i].start_row = i * rows_per_thread;
-        thread_data[i].end_row = (i + 1) * rows_per_thread;
         thread_data[i].points = points;
         thread_data[i].num_points = num_points;
         thread_data[i].boundaries = boundaries;
+        thread_data[i].start_row = i * rows_per_thread;
+        //se è l'ultimo thread prende tutte le righe rimanenti
+        thread_data[i].end_row = (i == NUM_THREADS - 1) ? h : (i + 1) * rows_per_thread;
+        thread_data[i].k = K;
 
-        pthread_create(&threads[i], NULL, classify_subrows, (void*)&thread_data[i]);
+        pthread_create(&threads[i], NULL, process_rows, &thread_data[i]);
     }
 
     for (int i = 0; i < NUM_THREADS; i++) {
@@ -177,15 +229,15 @@ void draw_boundaries(int **boundaries, png_bytep *row_pointers) {
     for (int y = 0; y < HEIGHT; y++) {
         png_bytep row = row_pointers[y];
         for (int x = 0; x < WIDTH; x++) {
-            int label = boundaries[x][y];
-            if (label == -1) {
+            int class = boundaries[x][y];
+            if (class == -1) {
                 row[x * 4] = 255;
                 row[x * 4 + 1] = 255;
                 row[x * 4 + 2] = 255;
             } else {
-                row[x * 4] = colors[label][0];
-                row[x * 4 + 1] = colors[label][1];
-                row[x * 4 + 2] = colors[label][2];
+                row[x * 4] = colors[class][0];
+                row[x * 4 + 1] = colors[class][1];
+                row[x * 4 + 2] = colors[class][2];
             }
             row[x * 4 + 3] = 255;
         }

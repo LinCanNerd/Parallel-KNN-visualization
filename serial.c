@@ -3,37 +3,47 @@
 #include <math.h>
 #include <png.h>
 
-// Define the maximum number of points and labels
+//gcc -o serial serial.c -lpng -lm
+
+// Definisco il numero massimo di punti e class
 #define MAX_POINTS 1000000 
-#define MAX_LABELS 5
+#define MAX_CLASSES 5
 #define WIDTH 720
 #define HEIGHT 720
 #define SIDE 3
+#define K 5
 
-// Define the structure of a point
+// Definisco la struttra di un punto
 typedef struct {
     double x, y;
-    int label;
+    int class;
 } Point;
 
+// Definisco la struttura di una distanza con etichetta
 typedef struct {
     double distance;
-    int label;
+    int class;
 } DistanceLabel;
 
-int compare(const void *a, const void *b) {
-    DistanceLabel *da = (DistanceLabel *)a;
-    DistanceLabel *db = (DistanceLabel *)b;
-    if (da->distance < db->distance) return -1;
-    if (da->distance > db->distance) return 1;
-    return 0;
+//bubble sort limitato a K iterazioni
+void k_bubble_sort(DistanceLabel *distances, int size, int k) {
+    for (int i = 0; i < k; i++) {
+        for (int j = i+1 ; j < size; j++) {
+            if (distances[i].distance > distances[j].distance) {
+                DistanceLabel temp = distances[i];
+                distances[i] = distances[j];
+                distances[j] = temp;
+            }
+        }
+    }
 }
 
+//calcolo della distanza euclidea
 double euclidean_distance(Point a, Point b) {
     return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2));
 }
 
-
+//funzione per leggere il file csv
 int read_csv(const char *filename, Point **points) {
     FILE *file = fopen(filename, "r");
     if (!file) {
@@ -49,7 +59,7 @@ int read_csv(const char *filename, Point **points) {
     }
 
     int i = 0;
-    while (fscanf(file, "%lf,%lf,%d", &temp_points[i].x, &temp_points[i].y, &temp_points[i].label) == 3) {
+    while (fscanf(file, "%lf,%lf,%d", &temp_points[i].x, &temp_points[i].y, &temp_points[i].class) == 3) {
         i++;
         if (i >= MAX_POINTS) {
             break;
@@ -61,6 +71,7 @@ int read_csv(const char *filename, Point **points) {
     return i; // Return the number of points read
 }
 
+//funzione per classificare un punto
 int classify(Point *points, int num_points, Point new_point, int k) {
     DistanceLabel *distances = (DistanceLabel *)malloc(num_points * sizeof(DistanceLabel));
     if (distances == NULL) {
@@ -68,21 +79,24 @@ int classify(Point *points, int num_points, Point new_point, int k) {
         return -1;
     }
 
+    //calcolo delle distanze euclidiane
     for (int i = 0; i < num_points; i++) {
         distances[i].distance = euclidean_distance(points[i], new_point);
-        distances[i].label = points[i].label;
+        distances[i].class = points[i].class;
     }
 
-    qsort(distances, num_points, sizeof(DistanceLabel), compare);
+    k_bubble_sort(distances, num_points, k);
 
-    int counts[MAX_LABELS] = {0};
+
+    //conta le classi e prendi quello maggiore
+    int counts[MAX_CLASSES] = {0};
     for (int i = 0; i < k; i++) {
-        counts[distances[i].label]++;
+        counts[distances[i].class]++;
     }
 
     int max_count = 0;
     int max_label = -1;
-    for (int i = 0; i < MAX_LABELS; i++) {
+    for (int i = 0; i < MAX_CLASSES; i++) {
         if (counts[i] > max_count) {
             max_count = counts[i];
             max_label = i;
@@ -94,6 +108,7 @@ int classify(Point *points, int num_points, Point new_point, int k) {
 }
 
 
+//funzione per calcolare i confini
 int** get_boundaries(Point *points, int num_points, int h, int w) {
     int **boundaries = (int **)malloc(h * sizeof(int *));
     
@@ -116,9 +131,9 @@ int** get_boundaries(Point *points, int num_points, int h, int w) {
 
     for (int i = 0; i < h; i += SIDE) {
         for (int j = 0; j < w; j += SIDE) {
-            Point center = {i + 1, j + 1}; // Center of 3x3 square
-            if (center.x >= h || center.y >= w) continue; // Skip if center is out of bounds
-            int class = classify(points, num_points, center, 5);
+            Point center = {i, j}; // Punto di riferimento del quadratino
+            if (center.x >= h || center.y >= w) continue; // controllo i confini
+            int class = classify(points, num_points, center, K);
             for (int x = i; x < i + SIDE && x < h; x++) {
                 for (int y = j; y < j + SIDE && y < w; y++) {
                     boundaries[x][y] = class;
@@ -131,6 +146,7 @@ int** get_boundaries(Point *points, int num_points, int h, int w) {
 }
 
 
+//colora i confini
 void draw_boundaries(int **boundaries, png_bytep *row_pointers) {
     png_byte colors[6][3] = {
         {255, 0, 0},    // Red
@@ -144,21 +160,22 @@ void draw_boundaries(int **boundaries, png_bytep *row_pointers) {
     for (int y = 0; y < HEIGHT; y++) {
         png_bytep row = row_pointers[y];
         for (int x = 0; x < WIDTH; x++) {
-            int label = boundaries[x][y];
-            if (label == -1) {
+            int class = boundaries[x][y];
+            if (class == -1) {
                 row[x * 4] = 255;
                 row[x * 4 + 1] = 255;
                 row[x * 4 + 2] = 255;
             } else {
-                row[x * 4] = colors[label][0];
-                row[x * 4 + 1] = colors[label][1];
-                row[x * 4 + 2] = colors[label][2];
+                row[x * 4] = colors[class][0];
+                row[x * 4 + 1] = colors[class][1];
+                row[x * 4 + 2] = colors[class][2];
             }
             row[x * 4 + 3] = 255;
         }
     }
 }
 
+//scrive il file png
 void write_png_file(const char *file_name, png_bytep *row_pointers) {
     FILE *fp = fopen(file_name, "wb");
     if (!fp) {
@@ -235,6 +252,7 @@ void free_memory(int **boundaries, png_bytep *row_pointers, Point *points) {
 int main() {
     Point *points;
     int num_points;
+    //leggo il file csv
     const char* filename = "dataset/cinquantamila.csv";
 
     num_points = read_csv(filename, &points);

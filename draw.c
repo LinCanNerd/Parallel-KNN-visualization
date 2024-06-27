@@ -81,7 +81,7 @@ int read_csv(const char *filename, Point **points) {
 
 int main() {
     Point *points;
-    int num_points = read_csv("dataset/diecimila.csv", &points);
+    int num_points = read_csv("dataset/cinquantamila.csv", &points);
     if (num_points < 0) {
         return 1; // Error reading CSV file
     }

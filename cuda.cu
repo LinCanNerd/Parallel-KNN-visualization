@@ -5,11 +5,14 @@
 #include <cuda_runtime.h>
 
 #define MAX_POINTS 1000000
-#define MAX_LABELS 5
+#define MAX_CLASSES 5
 #define WIDTH 720
 #define HEIGHT 720
 #define SIDE 4
-#define TILE_SIZE 32 // Each tile will be 32x32 pixels
+#define TILE_SIZE 32 // Ogni tile è 32x32
+#define K 50
+
+//nvcc -o cuda cuda.cu -lpng -lm
 
 typedef struct {
     double x, y;
@@ -20,6 +23,8 @@ __device__ double euclidean_distance(Point a, Point b) {
     return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2));
 }
 
+
+// Insertion sort
 __device__ void insertion_sort(double *distances, int *labels, int k) {
     for (int i = 1; i < k; i++) {
         double key_dist = distances[i];
@@ -36,19 +41,20 @@ __device__ void insertion_sort(double *distances, int *labels, int k) {
 }
 
 __device__ int classify_gpu(Point *points, int num_points, Point new_point, int k) {
-    double distances[MAX_LABELS];
-    int labels[MAX_LABELS];
 
-    // Initialize distances and labels with the first k points
+    double distances[K];
+    int labels[K];
+
+    // Inizializza distanze e labels di grandezza k
     for (int i = 0; i < k; i++) {
         distances[i] = euclidean_distance(points[i], new_point);
         labels[i] = points[i].label;
     }
 
-    // Sort initial k points
+    // Sort iniziale
     insertion_sort(distances, labels, k);
 
-    // Compare remaining points
+    // Per ogni nuova distanza fa un confronto
     for (int i = k; i < num_points; i++) {
         double dist = euclidean_distance(points[i], new_point);
         if (dist < distances[k - 1]) {
@@ -58,16 +64,16 @@ __device__ int classify_gpu(Point *points, int num_points, Point new_point, int 
         }
     }
 
-    // Count labels
-    int counts[MAX_LABELS] = {0};
+    // conta le classi e trova la classe più frequente
+    int counts[MAX_CLASSES] = {0};
     for (int i = 0; i < k; i++) {
         counts[labels[i]]++;
     }
 
-    // Find the most frequent label
+   
     int max_count = 0;
     int max_label = -1;
-    for (int i = 0; i < MAX_LABELS; i++) {
+    for (int i = 0; i < MAX_CLASSES; i++) {
         if (counts[i] > max_count) {
             max_count = counts[i];
             max_label = i;
@@ -87,8 +93,9 @@ __global__ void get_boundaries_gpu(Point *points, int num_points, int *boundarie
     int y = by * TILE_SIZE + ty * SIDE;
 
     if (x < width && y < height) {
-        Point center = {(double)x + 1.5, (double)y + 1.5}; // Center of 3x3 square
-        int label = classify_gpu(points, num_points, center, 5);
+
+        Point center = {(double)x , (double)y }; // pixl di riferimento del quadrato
+        int label = classify_gpu(points, num_points, center, K);
 
         for (int dx = 0; dx < SIDE && x + dx < width; dx++) {
             for (int dy = 0; dy < SIDE && y + dy < height; dy++) {
@@ -214,6 +221,7 @@ void allocate_memory_for_rows(png_bytep **row_pointers) {
 }
 
 int main() {
+    //inizializza i dati
     Point *h_points;
     int num_points;
     const char* filename = "dataset/cinquantamila.csv";
@@ -221,7 +229,7 @@ int main() {
     num_points = read_csv(filename, &h_points);
     if (num_points == -1) return 1;
 
-    // Allocate device memory
+    // Alloca la memoria device (GPU)
     Point *d_points;
     cudaMalloc(&d_points, num_points * sizeof(Point));
     cudaMemcpy(d_points, h_points, num_points * sizeof(Point), cudaMemcpyHostToDevice);
@@ -234,21 +242,21 @@ int main() {
     dim3 num_blocks((WIDTH + TILE_SIZE) / TILE_SIZE, (HEIGHT + TILE_SIZE) / TILE_SIZE);
     get_boundaries_gpu<<<num_blocks, block_size>>>(d_points, num_points, d_boundaries, WIDTH, HEIGHT);
 
-    // Check for any errors in kernel launch
+    // Controlla errori nel kernel
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         printf("CUDA error: %s\n", cudaGetErrorString(err));
         return -1;
     }
 
-    // Ensure the kernel has completed
+    // Controlla che sia tutto giusto
     cudaDeviceSynchronize();
 
-    // Copy result back to host
+    // Copia indietro i dati
     int *h_boundaries = (int *)malloc(WIDTH * HEIGHT * sizeof(int));
     cudaMemcpy(h_boundaries, d_boundaries, WIDTH * HEIGHT * sizeof(int), cudaMemcpyDeviceToHost);
 
-    // Convert 1D array to 2D for draw_boundaries function
+    // Crea l'immagine PNG
     int **boundaries_2d = (int **)malloc(HEIGHT * sizeof(int *));
     for (int i = 0; i < HEIGHT; i++) {
         boundaries_2d[i] = &h_boundaries[i * WIDTH];
