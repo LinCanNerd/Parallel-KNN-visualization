@@ -2,38 +2,59 @@
 #include <stdlib.h>
 #include <math.h>
 #include <png.h>
+#include <pthread.h>
 
-// Define the maximum number of points and CLASSES
+// Define the maximum number of points and labels
 #define MAX_POINTS 1000000 
-#define MAX_CLASSES 5
+#define MAX_LABELS 5
 #define WIDTH 720
 #define HEIGHT 720
 #define SIDE 3
+#define NUM_THREADS 8
 
 // Define the structure of a point
 typedef struct {
     double x, y;
-    int class;
+    int label;
 } Point;
-
 
 typedef struct {
     double distance;
-    int class;
-} DistanceClass;
+    int label;
+} DistanceLabel;
+
+typedef struct {
+    int thread_id;
+    int start_row;
+    int end_row;
+    Point *points;
+    int num_points;
+    int **boundaries;
+} ThreadData;
 
 int compare(const void *a, const void *b) {
-    DistanceClass *da = (DistanceClass *)a;
-    DistanceClass *db = (DistanceClass *)b;
+    DistanceLabel *da = (DistanceLabel *)a;
+    DistanceLabel *db = (DistanceLabel *)b;
     if (da->distance < db->distance) return -1;
     if (da->distance > db->distance) return 1;
     return 0;
 }
 
+void insertion_sort(DistanceLabel *distances, int n) {
+    for (int i = 1; i < n; i++) {
+        DistanceLabel key = distances[i];
+        int j = i - 1;
+        while (j >= 0 && distances[j].distance > key.distance) {
+            distances[j + 1] = distances[j];
+            j = j - 1;
+        }
+        distances[j + 1] = key;
+    }
+}
+
 double euclidean_distance(Point a, Point b) {
     return sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2));
 }
-
 
 int read_csv(const char *filename, Point **points) {
     FILE *file = fopen(filename, "r");
@@ -50,7 +71,7 @@ int read_csv(const char *filename, Point **points) {
     }
 
     int i = 0;
-    while (fscanf(file, "%lf,%lf,%d", &temp_points[i].x, &temp_points[i].y, &temp_points[i].class) == 3) {
+    while (fscanf(file, "%lf,%lf,%d", &temp_points[i].x, &temp_points[i].y, &temp_points[i].label) == 3) {
         i++;
         if (i >= MAX_POINTS) {
             break;
@@ -63,7 +84,7 @@ int read_csv(const char *filename, Point **points) {
 }
 
 int classify(Point *points, int num_points, Point new_point, int k) {
-    DistanceClass *distances = (DistanceClass *)malloc(num_points * sizeof(DistanceClass));
+    DistanceLabel *distances = (DistanceLabel *)malloc(num_points * sizeof(DistanceLabel));
     if (distances == NULL) {
         perror("Unable to allocate memory for distances");
         return -1;
@@ -71,19 +92,19 @@ int classify(Point *points, int num_points, Point new_point, int k) {
 
     for (int i = 0; i < num_points; i++) {
         distances[i].distance = euclidean_distance(points[i], new_point);
-        distances[i].class = points[i].class;
+        distances[i].label = points[i].label;
     }
 
-    qsort(distances, num_points, sizeof(DistanceClass), compare);
+    qsort(distances, num_points, sizeof(DistanceLabel), compare);
 
-    int counts[MAX_CLASSES] = {0};
+    int counts[MAX_LABELS] = {0};
     for (int i = 0; i < k; i++) {
-        counts[distances[i].class]++;
+        counts[distances[i].label]++;
     }
 
     int max_count = 0;
     int max_label = -1;
-    for (int i = 0; i < MAX_CLASSES; i++) {
+    for (int i = 0; i < MAX_LABELS; i++) {
         if (counts[i] > max_count) {
             max_count = counts[i];
             max_label = i;
@@ -94,10 +115,26 @@ int classify(Point *points, int num_points, Point new_point, int k) {
     return max_label;
 }
 
+void* classify_subrows(void* arg) {
+    ThreadData *data = (ThreadData*)arg;
+
+    for (int i = data->start_row; i < data->end_row; i += SIDE) {
+        for (int j = 0; j < WIDTH; j += SIDE) {
+            Point center = {i + 1, j + 1}; // Center of 3x3 square
+            if (center.x >= HEIGHT || center.y >= WIDTH) continue; // Skip if center is out of bounds
+            int class = classify(data->points, data->num_points, center, 5);
+            for (int x = i; x < i + SIDE && x < HEIGHT; x++) {
+                for (int y = j; y < j + SIDE && y < WIDTH; y++) {
+                    data->boundaries[x][y] = class;
+                }
+            }
+        }
+    }
+
+    pthread_exit(NULL);
+}
 
 int** get_boundaries(Point *points, int num_points, int h, int w) {
-
-    //alloco la memoria per i confini
     int **boundaries = (int **)malloc(h * sizeof(int *));
     
     if (boundaries == NULL) {
@@ -117,32 +154,29 @@ int** get_boundaries(Point *points, int num_points, int h, int w) {
         }
     }
 
+    pthread_t threads[NUM_THREADS];
+    ThreadData thread_data[NUM_THREADS];
+    int rows_per_thread = HEIGHT / NUM_THREADS;
 
-    //Per ogni quadratino SIDE x SIDE calcolo la classe
-    for (int i = 0; i < h; i += SIDE) {
-        for (int j = 0; j < w; j += SIDE) {
-            Point center = {i , j}; // Centro del quadratino
-            if (center.x >= h || center.y >= w) continue; // Se il centro è fuori dall'immagine
+    for (int i = 0; i < NUM_THREADS; i++) {
+        thread_data[i].thread_id = i;
+        thread_data[i].start_row = i * rows_per_thread;
+        thread_data[i].end_row = (i + 1) * rows_per_thread;
+        thread_data[i].points = points;
+        thread_data[i].num_points = num_points;
+        thread_data[i].boundaries = boundaries;
 
-            // Calcolo la classe del quadratino
-            int class = classify(points, num_points, center, 5);
+        pthread_create(&threads[i], NULL, classify_subrows, (void*)&thread_data[i]);
+    }
 
-            // Assegno la classe a tutti i pixel del quadratino
-            for (int x = i; x < i + SIDE && x < h; x++) {
-                for (int y = j; y < j + SIDE && y < w; y++) {
-                    boundaries[x][y] = class;
-                }
-            }
-        }
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
     }
 
     return boundaries;
 }
 
-
 void draw_boundaries(int **boundaries, png_bytep *row_pointers) {
-
-    // Colori delle classi
     png_byte colors[6][3] = {
         {255, 0, 0},    // Red
         {0, 255, 0},    // Green
@@ -155,15 +189,15 @@ void draw_boundaries(int **boundaries, png_bytep *row_pointers) {
     for (int y = 0; y < HEIGHT; y++) {
         png_bytep row = row_pointers[y];
         for (int x = 0; x < WIDTH; x++) {
-            int class = boundaries[x][y];
-            if (class == -1) {
+            int label = boundaries[x][y];
+            if (label == -1) {
                 row[x * 4] = 255;
                 row[x * 4 + 1] = 255;
                 row[x * 4 + 2] = 255;
             } else {
-                row[x * 4] = colors[class][0];
-                row[x * 4 + 1] = colors[class][1];
-                row[x * 4 + 2] = colors[class][2];
+                row[x * 4] = colors[label][0];
+                row[x * 4 + 1] = colors[label][1];
+                row[x * 4 + 2] = colors[label][2];
             }
             row[x * 4 + 3] = 255;
         }
@@ -244,29 +278,25 @@ void free_memory(int **boundaries, png_bytep *row_pointers, Point *points) {
 }
 
 int main() {
-    //inizializzo le variabili
     Point *points;
     int num_points;
     const char* filename = "dataset/diecimila.csv";
 
-    //leggo il file csv
     num_points = read_csv(filename, &points);
     if (num_points == -1) return 1;
 
-    //creo i confini
     int **boundaries = get_boundaries(points, num_points, HEIGHT, WIDTH);
     if (boundaries == NULL) {
         free(points);
         return 1;
     }
 
-    //creo il file png
     png_bytep *row_pointers;
     allocate_memory_for_rows(&row_pointers);
-    draw_boundaries(boundaries, row_pointers);
-    write_png_file("output/boundaries.png", row_pointers);
 
-    //libero la memoria
+    draw_boundaries(boundaries, row_pointers);
+    write_png_file("output/boundariesP.png", row_pointers);
+
     free_memory(boundaries, row_pointers, points);
 
     printf("PNG file created successfully!\n");
