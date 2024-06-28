@@ -239,7 +239,7 @@ int main() {
 
     // Launch kernel
     dim3 block_size(TILE_SIZE / SIDE, TILE_SIZE / SIDE);
-    dim3 num_blocks((WIDTH + TILE_SIZE) / TILE_SIZE, (HEIGHT + TILE_SIZE) / TILE_SIZE);
+    dim3 num_blocks((WIDTH + TILE_SIZE - 1) / TILE_SIZE, (HEIGHT + TILE_SIZE - 1) / TILE_SIZE);
     get_boundaries_gpu<<<num_blocks, block_size>>>(d_points, num_points, d_boundaries, WIDTH, HEIGHT);
 
     // Controlla errori nel kernel
